@@ -11,9 +11,9 @@ This package provides the **React Native renderer** - allowing A2UI-compliant ag
 ## Installation
 
 ```bash
-npm install @bramamoorthy/a2ui-react-native
+npm install a2ui-react-native
 # or
-yarn add @bramamoorthy/a2ui-react-native
+yarn add a2ui-react-native
 ```
 
 ## Quick Start
@@ -21,7 +21,7 @@ yarn add @bramamoorthy/a2ui-react-native
 ```tsx
 import React from 'react';
 import { View } from 'react-native';
-import { A2UIRenderer } from '@bramamoorthy/a2ui-react-native';
+import { A2UIRenderer } from 'a2ui-react-native';
 
 const App = () => {
   // A2UI JSON from your agent
@@ -64,7 +64,7 @@ const App = () => {
 A2UI uses JSONL (JSON Lines) for streaming updates. This renderer handles real-time UI updates as the agent generates content:
 
 ```tsx
-import { useA2UIStream } from '@bramamoorthy/a2ui-react-native';
+import { useA2UIStream } from 'a2ui-react-native';
 
 const StreamingApp = () => {
   const { spec, isLoading, error } = useA2UIStream('wss://your-agent-server.com/stream');

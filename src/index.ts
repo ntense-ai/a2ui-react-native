@@ -5,7 +5,7 @@
  *
  * @example
  * ```tsx
- * import { A2UIRenderer } from '@bramamoorthy/a2ui-react-native';
+ * import { A2UIRenderer } from 'a2ui-react-native';
  *
  * const App = () => {
  *   const spec = {

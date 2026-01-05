@@ -1,5 +1,5 @@
 {
-  "name": "@bramamoorthy/a2ui-react-native",
+  "name": "a2ui-react-native",
   "version": "0.1.0",
   "description": "A2UI React Native Renderer - Render Google's A2UI declarative UI specification in React Native",
   "keywords": [
@@ -12,13 +12,13 @@
     "declarative-ui",
     "agent-ui"
   ],
-  "homepage": "https://github.com/bramamoorthy/a2ui-react-native#readme",
+  "homepage": "https://github.com/sivamrudram-eng/a2ui-react-native#readme",
   "bugs": {
-    "url": "https://github.com/bramamoorthy/a2ui-react-native/issues"
+    "url": "https://github.com/sivamrudram-eng/a2ui-react-native/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/bramamoorthy/a2ui-react-native.git"
+    "url": "git+https://github.com/sivamrudram-eng/a2ui-react-native.git"
   },
   "license": "Apache-2.0",
   "author": "Barathwaj Ramamoorthy <rbarathwaj@gmail.com>",
