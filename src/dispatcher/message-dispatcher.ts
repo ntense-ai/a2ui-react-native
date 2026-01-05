@@ -127,12 +127,16 @@ export function createMessageDispatcher(options: MessageDispatcherOptions): Mess
         }
         break;
 
-      default:
+      default: {
+        // Use type assertion since message is exhaustively typed but
+        // the API may receive unknown message types from the server
+        const unknownMessage = message as { type: string };
         if (handlers.onUnknown) {
-          handlers.onUnknown(message);
+          handlers.onUnknown(unknownMessage as A2UIMessage);
         } else {
-          log(`Unknown message type: ${message.type}`);
+          log(`Unknown message type: ${unknownMessage.type}`);
         }
+      }
     }
 
     if (onAfterDispatch) {

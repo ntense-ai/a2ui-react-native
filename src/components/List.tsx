@@ -27,19 +27,10 @@ export const A2UIList: React.FC<A2UIListProps> = ({
     ? resolveValue(component.visible, dataModel)
     : true;
 
-  if (!visible) {
-    return null;
-  }
-
   // Resolve items - could be array or BoundValue
   const items = resolveValue(component.items, dataModel);
 
-  if (!Array.isArray(items)) {
-    console.warn('[A2UI List] Items must be an array, got:', typeof items);
-    return null;
-  }
-
-  // Key extractor
+  // Key extractor - must be before any early returns
   const keyExtractor = useCallback((item: unknown, index: number) => {
     if (component.keyExtractor && typeof item === 'object' && item !== null) {
       const key = (item as Record<string, unknown>)[component.keyExtractor];
@@ -50,7 +41,7 @@ export const A2UIList: React.FC<A2UIListProps> = ({
     return String(index);
   }, [component.keyExtractor]);
 
-  // Render item wrapper
+  // Render item wrapper - must be before any early returns
   const renderItemWrapper = useCallback(({ item, index }: { item: unknown; index: number }) => {
     // Create a data context with the item
     const itemDataModel = createRelativeDataContext(dataModel, item, '$item');
@@ -60,6 +51,15 @@ export const A2UIList: React.FC<A2UIListProps> = ({
       </View>
     );
   }, [dataModel, keyExtractor, renderItem]);
+
+  if (!visible) {
+    return null;
+  }
+
+  if (!Array.isArray(items)) {
+    console.warn('[A2UI List] Items must be an array, got:', typeof items);
+    return null;
+  }
 
   // Resolve any custom style BoundValues
   const customStyle = resolveStyleValues(

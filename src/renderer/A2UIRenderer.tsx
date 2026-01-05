@@ -10,7 +10,6 @@ import { View, Text, StyleSheet, ActivityIndicator } from 'react-native';
 import type {
   A2UIComponent,
   A2UIRendererProps,
-  ActionPayload,
   TextComponent,
   ButtonComponent,
   ImageComponent,

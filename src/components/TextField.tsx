@@ -36,6 +36,20 @@ export const A2UITextField: React.FC<A2UITextFieldProps> = ({
     ? resolveValue(component.visible, dataModel)
     : true;
 
+  // Handle text change - must be before any early returns
+  const handleChange = useCallback((text: string) => {
+    setLocalValue(text);
+
+    if (onAction && component.onChangeAction) {
+      onAction({
+        actionId: component.onChangeAction,
+        surfaceId,
+        componentId: component.id,
+        data: { value: text },
+      });
+    }
+  }, [onAction, component.onChangeAction, component.id, surfaceId]);
+
   if (!visible) {
     return null;
   }
@@ -49,20 +63,6 @@ export const A2UITextField: React.FC<A2UITextFieldProps> = ({
   const label = component.label !== undefined
     ? String(resolveValue(component.label, dataModel) ?? '')
     : undefined;
-
-  // Handle text change
-  const handleChange = useCallback((text: string) => {
-    setLocalValue(text);
-
-    if (onAction && component.onChangeAction) {
-      onAction({
-        actionId: component.onChangeAction,
-        surfaceId,
-        componentId: component.id,
-        data: { value: text },
-      });
-    }
-  }, [onAction, component.onChangeAction, component.id, surfaceId]);
 
   // Resolve any custom style BoundValues
   const customStyle = resolveStyleValues(

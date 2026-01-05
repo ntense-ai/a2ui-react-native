@@ -186,4 +186,21 @@ export type {
 
   // Renderer Props
   A2UIRendererProps,
+
+  // Custom Component Props
+  CustomComponentProps,
 } from './types/a2ui-types';
+
+// =============================================================================
+// Hooks
+// =============================================================================
+
+export {
+  useA2UIStream,
+} from './hooks/useA2UIStream';
+
+export type {
+  A2UISpec,
+  UseA2UIStreamOptions,
+  UseA2UIStreamResult,
+} from './hooks/useA2UIStream';

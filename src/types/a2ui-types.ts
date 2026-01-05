@@ -4,6 +4,8 @@
  * https://a2ui.org/
  */
 
+import type React from 'react';
+
 // =============================================================================
 // Bound Values - For data binding
 // =============================================================================
@@ -31,6 +33,7 @@ export interface BaseComponent {
   style?: Record<string, BoundValue | string | number>;
   visible?: BoundValue | boolean;
 }
+
 
 // =============================================================================
 // Content Components
@@ -195,6 +198,28 @@ export type A2UIComponent =
   | TabsComponent;
 
 // =============================================================================
+// Action Payloads (Client → Server)
+// =============================================================================
+
+export interface ActionPayload {
+  actionId: string;
+  surfaceId: string;
+  componentId: string;
+  data?: Record<string, unknown>;
+}
+
+// =============================================================================
+// Custom Component Props
+// =============================================================================
+
+export interface CustomComponentProps {
+  component: A2UIComponent;
+  dataModel: Record<string, unknown>;
+  surfaceId: string;
+  onAction?: (payload: ActionPayload) => void;
+}
+
+// =============================================================================
 // A2UI Messages (JSONL Protocol)
 // =============================================================================
 
@@ -236,17 +261,6 @@ export type A2UIMessage =
   | DeleteSurfaceMessage
   | ErrorMessage;
 
-// =============================================================================
-// Action Payloads (Client → Server)
-// =============================================================================
-
-export interface ActionPayload {
-  actionId: string;
-  surfaceId: string;
-  componentId: string;
-  data?: Record<string, unknown>;
-}
-
 export interface CapabilityReport {
   type: 'capabilities';
   supportedComponents: string[];
@@ -281,7 +295,7 @@ export interface A2UIRendererProps {
   onAction?: (payload: ActionPayload) => void;
 
   /** Custom component overrides */
-  customComponents?: Record<string, React.ComponentType<unknown>>;
+  customComponents?: Record<string, React.ComponentType<CustomComponentProps>>;
 
   /** Loading indicator to show while rendering */
   loadingComponent?: React.ReactNode;

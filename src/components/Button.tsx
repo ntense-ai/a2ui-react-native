@@ -41,11 +41,7 @@ export const A2UIButton: React.FC<A2UIButtonProps> = ({
     ? resolveValue(component.visible, dataModel)
     : true;
 
-  if (!visible) {
-    return null;
-  }
-
-  // Handle press
+  // Handle press - must be before any early returns
   const handlePress = useCallback(() => {
     if (disabled) return;
 
@@ -57,6 +53,10 @@ export const A2UIButton: React.FC<A2UIButtonProps> = ({
       });
     }
   }, [disabled, onAction, component.action, component.id, surfaceId]);
+
+  if (!visible) {
+    return null;
+  }
 
   // Get variant styles
   const variant = component.variant || 'primary';
