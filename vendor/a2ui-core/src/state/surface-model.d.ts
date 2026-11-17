@@ -1,0 +1,361 @@
+import { DataModel } from './data-model.js';
+import { Catalog, ComponentApi, FunctionApi, FunctionImplementation } from '../catalog/types.js';
+import { SurfaceComponentsModel } from './surface-components-model.js';
+import { EventSource } from '../common/events.js';
+import { A2uiMetadata, Extensions } from '../common/metadata.js';
+import { Signal } from '../reactivity/signals.js';
+/** Action payload emitted by a renderer component. */
+export interface ActionPayload {
+    /** Name of the action or function being invoked. */
+    name: string;
+    /** Identifier of the surface where the action originated. */
+    surfaceId: string;
+    /** Identifier of the component that triggered the action. */
+    sourceComponentId: string;
+    /** ISO 8601 timestamp recorded when the action was dispatched. */
+    timestamp: string;
+    /** Context parameters or arguments passed with the action. */
+    context: Record<string, unknown>;
+    /**
+     * Identifier of the catalog that declares the invoked function, when the
+     * payload named one explicitly. Absent when the surface's default catalog
+     * resolved the call.
+     */
+    catalogId?: string;
+    /** Optional user-facing message explaining the action. */
+    userMessage?: string;
+    /** Optional extension metadata attached to the action. */
+    metadata?: A2uiMetadata;
+    [key: string]: unknown;
+}
+/** Error payload emitted by a surface. */
+export interface A2uiErrorPayload {
+    /** Machine-readable error code identifying the error category. */
+    code: string;
+    /** Human-readable error message describing the failure. */
+    message: string;
+    /** Identifier of the surface where the error occurred, if applicable. */
+    surfaceId?: string;
+    /** Identifier of the failed RPC function invocation, if applicable. */
+    functionCallId?: string;
+    /** Expression string or function name that caused the error, if applicable. */
+    expression?: string;
+    /** Additional diagnostic details or validation issues. */
+    details?: Record<string, unknown>;
+    [key: string]: unknown;
+}
+/**
+ * Payload emitted on `SurfaceModel.onWarning` when a non-fatal condition
+ * occurs during surface evaluation (such as a bound JSON Pointer that does not
+ * physically exist in the active DataModel).
+ */
+export interface A2uiWarningPayload {
+    /** Machine-readable warning code (e.g. `'MISSING_DATA_BINDING'`). */
+    code: 'MISSING_DATA_BINDING' | (string & {});
+    /** Absolute JSON pointer path associated with the warning, if applicable. */
+    path?: string;
+    /** Human-readable explanation of the warning condition. */
+    message: string;
+    /** Identifier of the surface where the warning occurred, if bound. */
+    surfaceId?: string;
+    [key: string]: unknown;
+}
+/** Handler callback for actions emitted from a surface. */
+export type ActionListener = (action: ActionPayload) => void | Promise<void>;
+/**
+ * A function call that a surface routes to the agent.
+ *
+ * Unlike a `FunctionCall` in a payload, it always names the catalog the call
+ * resolved to, and its arguments are resolved values.
+ */
+export interface AgentFunctionCall {
+    /** Name of the function to call. */
+    '@call': string;
+    /** Identifier of the catalog the call resolved to on the surface. */
+    catalogId: string;
+    /** Resolved argument values. */
+    args: Record<string, unknown>;
+}
+/** Options of {@link SurfaceModel.callAgentFunction}. */
+export interface AgentFunctionCallOptions {
+    /**
+     * Cancels this caller's interest before the request leaves on the next
+     * microtask. A signal that is already aborted sends nothing, and the call
+     * resolves to `undefined`.
+     */
+    abortSignal?: AbortSignal;
+    /**
+     * Sends the call without sharing an identical in-flight call or reading or
+     * writing the settled-answer cache, as imperative action calls do.
+     */
+    bypassCache?: boolean;
+}
+/**
+ * Sends a function call to the agent and resolves with the agent's result.
+ *
+ * `MessageProcessor` installs one on each v1.0 surface when it has an
+ * outbound listener; it dispatches `callAgentFunction` through the
+ * processor's `RpcHandler`.
+ */
+export type AgentFunctionCaller = (call: AgentFunctionCall) => Promise<unknown>;
+/**
+ * State model for a single UI surface.
+ *
+ * Coordinates data binding, component state, and action dispatching.
+ *
+ * @template T Concrete type of the ComponentApi from the catalog.
+ * @template F The catalog's function kind. Every state and messaging
+ *   capability of the surface works with a schema-only catalog
+ *   (`SurfaceModel<T, FunctionApi>`); only node-tree resolution needs
+ *   implementations.
+ */
+export declare class SurfaceModel<T extends ComponentApi = ComponentApi, F extends FunctionApi = FunctionImplementation> {
+    readonly id: string;
+    /**
+     * Catalog that resolves components and functions that do not name a
+     * catalog explicitly, or `undefined` when the surface names none.
+     */
+    readonly defaultCatalog: Catalog<T, F> | undefined;
+    /** Identifier of the root component on this surface (defaults to `'root'`). */
+    readonly rootId: string;
+    /** Data model for this surface. */
+    readonly dataModel: DataModel;
+    /** Collection of component models for this surface. */
+    readonly componentsModel: SurfaceComponentsModel;
+    private readonly _onAction;
+    private readonly _onError;
+    private readonly _onWarning;
+    private readonly _onMetadataChanged;
+    private readonly _metadataSignal;
+    /** Event source firing whenever an action is dispatched from this surface. */
+    readonly onAction: EventSource<ActionPayload>;
+    /** Event source firing whenever an error occurs on this surface. */
+    readonly onError: EventSource<A2uiErrorPayload>;
+    /** Event source firing whenever a non-fatal warning occurs on this surface. */
+    readonly onWarning: EventSource<A2uiWarningPayload>;
+    /** Event source firing whenever surface metadata changes. */
+    readonly onMetadataChanged: EventSource<A2uiMetadata | undefined>;
+    /** Read-only reactive signal reflecting the current surface metadata. */
+    readonly metadataSignal: Signal<A2uiMetadata | undefined>;
+    /**
+     * Catalogs available to this surface, keyed by catalog ID.
+     *
+     * Payloads on this surface may select any of these catalogs by `catalogId`.
+     * Includes the surface's {@link defaultCatalog} under its identifier.
+     */
+    readonly availableCatalogs: ReadonlyMap<string, Catalog<T, F>>;
+    /**
+     * Protocol version this surface speaks.
+     *
+     * Taken from the `protocolVersion` constructor argument when provided (for
+     * example from a `createSurface` message's version), falling back to the
+     * default catalog's version. Stored in the canonical wire form used by
+     * messages (for example `'1.0'` or `'v0.9'`), whichever form it was given in.
+     */
+    readonly protocolVersion: string | undefined;
+    /** Theme visual configuration for this surface. */
+    readonly theme: any;
+    /** Whether the surface sends its full data model back with actions. */
+    readonly sendDataModel: boolean;
+    private _agentFunctionCaller?;
+    /**
+     * Sends calls to functions the renderer does not implement to the agent.
+     *
+     * When set, a v1.0 catalog's invoker routes a call whose function has no
+     * local implementation in that catalog (undeclared, or declared
+     * schema-only) here instead of failing, as the v1.0 fallback routing
+     * defines. When unset, such a call fails with an `EXPRESSION_ERROR`.
+     *
+     * Setting a different caller, or clearing it, drops the shared in-flight
+     * calls and the cached answers of the previous one.
+     */
+    get agentFunctionCaller(): AgentFunctionCaller | undefined;
+    set agentFunctionCaller(caller: AgentFunctionCaller | undefined);
+    /** Agent function calls awaiting a response, keyed by canonical call key. */
+    private readonly inFlightAgentCalls;
+    /**
+     * Settled reactive agent function answers, keyed by canonical call key in
+     * insertion (FIFO) order, bounded to `maxAgentCallCacheEntries` by evicting
+     * the oldest entry first. Reading an entry doesn't move it.
+     */
+    private readonly settledAgentCalls;
+    private _maxAgentCallCacheEntries;
+    /**
+     * The most settled agent function answers this surface caches (256 by
+     * default). When the cache is full, the oldest answer is evicted first.
+     * Lowering it evicts the oldest answers beyond the new bound.
+     *
+     * @throws {RangeError} On set, if the value isn't a positive integer.
+     */
+    get maxAgentCallCacheEntries(): number;
+    set maxAgentCallCacheEntries(value: number);
+    private evictOldestAgentCall;
+    private isDisposed;
+    /**
+     * Whether this surface has been disposed.
+     */
+    get disposed(): boolean;
+    /**
+     * Initializes a new `SurfaceModel` instance.
+     *
+     * @param id Unique identifier for this surface.
+     * @param defaultCatalog Catalog that resolves components and functions that
+     *   do not name a catalog explicitly. From v1.0 a surface may have none, in
+     *   which case every component and function call must name its catalog.
+     * @param availableCatalogs Every catalog a payload on this surface may select
+     *   by `catalogId`, keyed by that identifier. The message processor populates
+     *   it with the catalogs whose protocol version is compatible with the
+     *   surface's own. Passing a plain object here is deprecated: it selects the
+     *   pre-1.0 argument order `(id, catalog, theme, sendDataModel?, dataModel?)`,
+     *   in which the object is the theme and the two arguments after it shift.
+     * @param theme Theme to apply to this surface.
+     * @param sendDataModel Whether the renderer sends the full data model with actions.
+     * @param dataModel Optional custom DataModel instance. If provided, the SurfaceModel assumes
+     *   full ownership of its lifecycle and will dispose it when dispose() is called.
+     * @param rootId Identifier of the root component on this surface (defaults to `'root'`).
+     * @param metadata Optional surface-level metadata for vendor extensions.
+     * @param protocolVersion Protocol version of the surface. Takes precedence
+     *   over the default catalog's version when provided, falling back to the
+     *   default catalog's version when omitted.
+     * @param maxAgentCallCacheEntries The most settled agent function answers
+     *   to cache (256 by default). See {@link maxAgentCallCacheEntries}.
+     * @throws {RangeError} If `maxAgentCallCacheEntries` isn't a positive integer.
+     */
+    constructor(id: string, defaultCatalog: Catalog<T, F> | undefined, availableCatalogs?: ReadonlyMap<string, Catalog<T, F>> | null, theme?: any, sendDataModel?: boolean, dataModel?: DataModel, rootId?: string, metadata?: A2uiMetadata, protocolVersion?: string, maxAgentCallCacheEntries?: number);
+    /**
+     * Initializes a new `SurfaceModel` with the pre-1.0 argument order.
+     *
+     * @deprecated Pass `availableCatalogs` (or `undefined`) as the third argument instead.
+     */
+    constructor(id: string, defaultCatalog: Catalog<T, F> | undefined, theme: Record<string, any>, sendDataModel?: boolean, dataModel?: DataModel);
+    /**
+     * The surface's default catalog.
+     *
+     * @deprecated Use {@link defaultCatalog}. Renamed for symmetry with the other
+     *   SDKs now that a surface can carry more than one catalog. This alias will
+     *   be removed in a future release. Typed as always present because every
+     *   pre-1.0 surface has a default catalog.
+     */
+    get catalog(): Catalog<T, F>;
+    /**
+     * Resolves the catalog that an item on this surface uses.
+     *
+     * An item that names a catalog uses that entry of {@link availableCatalogs};
+     * one that names none uses the {@link defaultCatalog}. Both the message
+     * processor, when validating a payload, and `DataContext`, when running a
+     * function call, resolve catalogs through this method.
+     *
+     * @param catalogId Catalog the item names, or `undefined` when it names none.
+     * @param subject Description of the item for error messages, such as
+     *   `Function call 'formatDate'`.
+     * @returns The catalog the item resolves to.
+     * @throws {A2uiCatalogError} If the named catalog is not available on this
+     *   surface, or if the item names none and the surface has no default
+     *   catalog.
+     */
+    resolveCatalog(catalogId: string | undefined, subject?: string): Catalog<T, F>;
+    /**
+     * Sends a function call to the agent through {@link agentFunctionCaller}.
+     *
+     * For reactive bindings, a settled answer for the same catalog, function and
+     * canonical arguments is returned from the surface cache, and a call
+     * identical to one still awaiting its response shares that response instead
+     * of sending another message, so re-evaluating a binding or flipping a bound
+     * argument back does not repeat the request. Each caller receives its own
+     * copy of a shared or cached answer. Failed calls are evicted on failure,
+     * and imperative action calls (`bypassCache`) always execute fresh.
+     *
+     * Arguments that JSON cannot represent (such as `NaN`, a `Date` or an
+     * `undefined` array element) fail the call locally; an `undefined` object
+     * property is omitted.
+     *
+     * @param call The call to send, naming the catalog it resolved to.
+     * @param options Optional settings: an `abortSignal`, and `bypassCache` for
+     *   imperative action calls.
+     * @returns A promise resolving to the agent's result.
+     * @throws {A2uiRpcError} Through the returned promise, with code
+     *   `CANCELLED`, if the surface is disposed, or is disposed or given another
+     *   caller before the call is sent.
+     * @throws {A2uiExpressionError} Through the returned promise, if no
+     *   {@link agentFunctionCaller} is set or the arguments are not valid JSON.
+     */
+    callAgentFunction(call: AgentFunctionCall, options?: AgentFunctionCallOptions): Promise<unknown>;
+    /**
+     * Synchronous snapshot of the surface's metadata envelope.
+     */
+    get metadata(): A2uiMetadata | undefined;
+    /**
+     * Replaces the surface's metadata envelope, validating UAX #31 extension
+     * keys and emitting changes when structurally modified.
+     */
+    set metadata(metadata: A2uiMetadata | undefined);
+    /**
+     * Convenience view of `metadata.extensions`.
+     */
+    get extensions(): Extensions | undefined;
+    /**
+     * Sets a single extension entry on the surface metadata.
+     *
+     * Passing `undefined` removes the extension key. Passing `null` stores
+     * `null` as an explicit JSON value.
+     *
+     * @param key Extension identifier (must satisfy UAX #31).
+     * @param value Extension payload value.
+     */
+    setExtension(key: string, value: unknown): void;
+    /**
+     * Removes an extension entry by key, clearing `metadata` to `undefined` when
+     * no metadata entries remain.
+     *
+     * @param key Extension identifier to remove.
+     */
+    removeExtension(key: string): void;
+    /**
+     * Dispatches an action from this surface to registered listeners.
+     *
+     * Resolves event action payload details, propagates any explicit `catalogId`
+     * and `metadata`, and emits an `ActionPayload` via `onAction`. Local function
+     * actions (`functionCall`) are executed locally and are not emitted as agent actions.
+     *
+     * `payload` may be pending, as the result of `DataContext.resolveAction` is
+     * for an event action that waits on asynchronous calls, and its `context`
+     * and `userMessage` may hold pending values; all are awaited before the
+     * action is emitted. If any of them fails, nothing is emitted: a failure
+     * that was already reported, or a cancelled agent call, is not reported
+     * again, and any other rejection is reported as an `INVALID_ACTION`.
+     *
+     * A `userMessage` that is not a non-empty string is left out of the emitted
+     * action, whether it was given directly or settled from a pending value.
+     * `DataContext.resolveAction` is what reports an `INVALID_ACTION` for an
+     * expression that does not resolve to a string.
+     *
+     * @param payload Action payload (name and context) to dispatch.
+     * @param sourceComponentId Identifier of the component that triggered the action.
+     * @param metadata Optional metadata envelope to attach to the outbound action.
+     * @returns A promise that resolves once all registered listeners have processed the action.
+     */
+    dispatchAction(payload: any, sourceComponentId: string, metadata?: A2uiMetadata): Promise<void>;
+    /**
+     * Reports a pending action value that rejected, unless the rejection is the
+     * cancellation of an agent call.
+     */
+    private reportUnresolvedAction;
+    /**
+     * Dispatches an error from this surface to registered listeners.
+     *
+     * @param error Error payload to dispatch, conforming to the renderer-to-agent schema.
+     * @returns A promise that resolves once all registered listeners have processed the error.
+     */
+    dispatchError(error: A2uiErrorPayload): Promise<void>;
+    /**
+     * Dispatches a non-fatal warning from this surface to registered listeners.
+     *
+     * @param warning The warning payload to dispatch.
+     * @returns Promise that resolves once listeners have handled the warning.
+     */
+    dispatchWarning(warning: A2uiWarningPayload): Promise<void>;
+    /**
+     * Disposes the surface, data model, components, and event emitters.
+     */
+    dispose(): void;
+}

@@ -249,3 +249,6 @@ export type {
   BorderRadius,
   ComponentStyles,
 } from './theme';
+
+// A2UI v1.0: official core with a React Native adapter and native basic catalog.
+export * from './v1';

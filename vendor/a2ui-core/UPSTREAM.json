@@ -1,0 +1,6 @@
+{
+  "repository": "https://github.com/a2ui-project/a2ui",
+  "revision": "1cbef31b115c854bb98048cdda2fbce6b7db9d0f",
+  "source": "typescript/core/web_core",
+  "adaptation": "Browser-free entry points; Object.hasOwn rewritten for older Hermes."
+}

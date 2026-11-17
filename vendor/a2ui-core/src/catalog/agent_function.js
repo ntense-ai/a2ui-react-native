@@ -1,0 +1,253 @@
+/*
+ * Copyright 2024 Google LLC
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      https://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+var _a;
+import { z } from 'zod';
+import { A2uiCatalogError } from '../errors.js';
+import { AGENT_FUNCTION_BRAND, isAgentFunction } from './agent_function_brand.js';
+import { copyLoadedDefinition } from './json_entries.js';
+import { convertFunctionArgsJsonSchemaToZod, functionParameterNames, isZodSchema, } from './schema_loader.js';
+export { isAgentFunction };
+/**
+ * Key of the fields only `AgentFunction.fromApi` passes to the constructor,
+ * so code outside this module can't set them.
+ */
+const FROM_API = Symbol('AgentFunction.fromApi');
+const BOUND_DEFS = Symbol('AgentFunction.boundDefs');
+/**
+ * A catalog function whose handler runs on the agent rather than the renderer.
+ *
+ * `AgentFunction` implements {@link FunctionApi} (and intentionally omits
+ * `FunctionImplementation.execute`) so that:
+ * - `Catalog.toJson()`, `Catalog.validationSchema`, and `PayloadValidator`
+ *   treat it identically to any other declared catalog function.
+ * - If a catalog containing an `AgentFunction` is passed to a renderer,
+ *   `Catalog.invoker` sees no local `execute` implementation and routes calls
+ *   to the agent via `callAgentFunction`.
+ * - On the agent side, `RendererToAgentMessageProcessor` reads
+ *   `catalog.agentFunctions` to answer incoming `callAgentFunction` messages
+ *   with `handler`.
+ *
+ * Add agent functions to a catalog with `catalog.copyWith({agentFunctions})`.
+ *
+ * The type parameters only type the constructor's `handler` from `schema` and
+ * `returnType`, so any `AgentFunction` is assignable to `AgentFunction`.
+ *
+ * @template Schema The Zod schema or JSON Schema object of the arguments.
+ * @template TReturn The return type identifier.
+ */
+export class AgentFunction {
+    /**
+     * Initializes a new `rendererOnly` agent function.
+     *
+     * @param init The function's name, handler and signature.
+     * @throws {TypeError} If `handler` is not callable.
+     */
+    constructor(init) {
+        /** @internal */
+        this[_a] = true;
+        if (typeof init?.handler !== 'function') {
+            throw new TypeError(`Agent function '${init?.name ?? ''}' requires a callable handler.`);
+        }
+        const fromApi = init[FROM_API];
+        const bound = init[BOUND_DEFS];
+        this.name = init.name;
+        this.returnType = init.returnType ?? 'any';
+        this.schema = bound ? bound.resolvedSchema : resolveAgentFunctionSchema(init.schema);
+        if (init.schema !== undefined && !isZodSchema(init.schema)) {
+            this.jsonSchema = init.schema;
+            // `init.schema` is also the document its local `#/$defs/...` resolve in.
+            this.declaredParameterNames = bound
+                ? bound.declaredParameterNames
+                : functionParameterNames(init.schema, init.schema);
+        }
+        this.boundCatalogDefs = bound?.catalogDefs;
+        this.handler = init.handler;
+        this.explicitAllowedCallers = fromApi?.allowedCallers;
+        this.allowedCallers = fromApi?.allowedCallers ?? 'rendererOnly';
+        this.explicitRequiresUserActivation = init.requiresUserActivation;
+        this.requiresUserActivation = init.requiresUserActivation ?? false;
+        this.description = init.description;
+        this.declaration = fromApi?.declaration;
+    }
+    /**
+     * Binds an agent-side `handler` to a function a catalog declares (for
+     * example, an entry from `Catalog.fromJson(doc).functions`).
+     *
+     * Keeps the declaration's signature, `allowedCallers` and JSON Schema
+     * definition, so `Catalog.toJson()` continues to emit the authored catalog
+     * document unchanged, and records `declaration` so
+     * `catalog.copyWith({agentFunctions: [...]})` replaces the declaration in
+     * place. That catalog must declare `api`.
+     *
+     * @param api Existing schema-only function declaration.
+     * @param handler Agent-side execution callback.
+     * @returns A new `AgentFunction` wrapping `api`.
+     * @throws {TypeError} If `api` is already an `AgentFunction` or `handler` is not callable.
+     * @throws {A2uiCatalogError} If `api` is `agentOnly`, which a renderer
+     *   never calls, or requires user activation without being `rendererOnly`.
+     */
+    static fromApi(api, handler) {
+        if (isAgentFunction(api)) {
+            throw new TypeError(`Function '${api.name}' is already an agent function.`);
+        }
+        if (api.allowedCallers === 'agentOnly') {
+            throw new A2uiCatalogError(`Function '${api.name}' is agentOnly, so a renderer never calls it and it can't be an agent function.`);
+        }
+        if (api.requiresUserActivation === true &&
+            api.allowedCallers !== undefined &&
+            api.allowedCallers !== 'rendererOnly') {
+            throw new A2uiCatalogError(`Function '${api.name}' requires user activation, so its allowedCallers must be rendererOnly, not ${api.allowedCallers}.`);
+        }
+        const init = {
+            name: api.name,
+            returnType: api.returnType,
+            schema: api.schema,
+            handler: handler,
+            requiresUserActivation: api.requiresUserActivation,
+            description: api.description,
+            [FROM_API]: { declaration: api, allowedCallers: api.allowedCallers },
+        };
+        const fn = new AgentFunction(init);
+        copyLoadedDefinition(api, fn);
+        return fn;
+    }
+    /**
+     * Returns a copy of this agent function bound to a different handler, with
+     * the same name, signature, `allowedCallers` and description: for example,
+     * to swap in a test double, or a handler for one session. One built with
+     * `fromApi` is rebuilt from the same declaration, so it still replaces that
+     * declaration in its catalog.
+     *
+     * @param handler The new agent-side execution callback.
+     * @returns A new `AgentFunction`.
+     * @throws {TypeError} If `handler` is not callable.
+     */
+    withHandler(handler) {
+        if (this.declaration !== undefined) {
+            return AgentFunction.fromApi(this.declaration, handler);
+        }
+        return new AgentFunction({
+            name: this.name,
+            returnType: this.returnType,
+            schema: this.jsonSchema ?? this.schema,
+            handler: handler,
+            requiresUserActivation: this.explicitRequiresUserActivation,
+            description: this.description,
+        });
+    }
+}
+_a = AGENT_FUNCTION_BRAND;
+function resolveAgentFunctionSchema(schema) {
+    if (schema === undefined) {
+        return z.record(z.unknown());
+    }
+    if (isZodSchema(schema)) {
+        return schema;
+    }
+    if (typeof schema === 'object' && schema !== null && !Array.isArray(schema)) {
+        if (Object.keys(schema).length === 0) {
+            return z.record(z.unknown());
+        }
+        // A v1.0 catalog checks the parameter names when the function is added.
+        return convertFunctionArgsJsonSchemaToZod(schema, schema);
+    }
+    return z.record(z.unknown());
+}
+function isPlainDefsMap(value) {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+function referencesCatalogDefs(jsonSchema, catalogDefs) {
+    const localDefs = isPlainDefsMap(jsonSchema.$defs) ? jsonSchema.$defs : undefined;
+    const visited = new Set();
+    const scan = (node) => {
+        if (typeof node !== 'object' || node === null || visited.has(node))
+            return false;
+        visited.add(node);
+        if (Array.isArray(node)) {
+            return node.some(scan);
+        }
+        const obj = node;
+        if (typeof obj.$ref === 'string' && obj.$ref.startsWith('#/$defs/')) {
+            const defName = obj.$ref
+                .slice('#/$defs/'.length)
+                .split('/')[0]
+                .replace(/~1/g, '/')
+                .replace(/~0/g, '~');
+            if (defName in catalogDefs && !(localDefs && defName in localDefs)) {
+                return true;
+            }
+        }
+        for (const value of Object.values(obj)) {
+            if (scan(value))
+                return true;
+        }
+        return false;
+    };
+    return scan(jsonSchema);
+}
+/**
+ * @internal Resolves a JSON Schema `AgentFunction` against a catalog's `$defs`
+ * without mutating the caller's instance. Returns `fn` unchanged when `fn` was
+ * built from a Zod schema, already binds `catalogDefs`, or does not reference
+ * any definition in `catalogDefs`.
+ */
+export function bindAgentFunctionDefs(fn, catalogDefs) {
+    const jsonSchema = fn.jsonSchema;
+    if (jsonSchema === undefined || fn.boundCatalogDefs === catalogDefs) {
+        return fn;
+    }
+    const hasCatalogRefs = catalogDefs !== undefined &&
+        Object.keys(catalogDefs).length > 0 &&
+        referencesCatalogDefs(jsonSchema, catalogDefs);
+    if (!hasCatalogRefs && fn.boundCatalogDefs === undefined) {
+        return fn;
+    }
+    const localDefs = isPlainDefsMap(jsonSchema.$defs) ? jsonSchema.$defs : undefined;
+    const rootDoc = hasCatalogRefs
+        ? {
+            ...jsonSchema,
+            $defs: { ...catalogDefs, ...localDefs },
+        }
+        : { ...jsonSchema };
+    const resolvedSchema = Object.keys(jsonSchema).length === 0
+        ? z.record(z.unknown())
+        : convertFunctionArgsJsonSchemaToZod(jsonSchema, rootDoc);
+    const declaredParameterNames = functionParameterNames(jsonSchema, rootDoc);
+    const init = {
+        name: fn.name,
+        returnType: fn.returnType,
+        schema: jsonSchema,
+        handler: fn.handler,
+        requiresUserActivation: fn.explicitRequiresUserActivation,
+        description: fn.description,
+        ...(fn.declaration !== undefined
+            ? {
+                [FROM_API]: {
+                    declaration: fn.declaration,
+                    allowedCallers: fn.explicitAllowedCallers,
+                },
+            }
+            : {}),
+        [BOUND_DEFS]: {
+            catalogDefs: hasCatalogRefs ? catalogDefs : undefined,
+            resolvedSchema,
+            declaredParameterNames,
+        },
+    };
+    const bound = new AgentFunction(init);
+    copyLoadedDefinition(fn, bound);
+    return bound;
+}

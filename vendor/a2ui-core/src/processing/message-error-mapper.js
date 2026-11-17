@@ -1,0 +1,231 @@
+/*
+ * Copyright 2024 Google LLC
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      https://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+import { z } from 'zod';
+import { isAtLeastVersion } from '../common/semver.js';
+import { A2uiCatalogError, A2uiDataError, A2uiError, A2uiExpressionError, A2uiIntegrityError, A2uiRecursionError, A2uiRpcError, A2uiStateError, A2uiValidationError, } from '../errors.js';
+/** Known top-level action envelope keys across A2UI protocol versions. */
+const ACTION_ENVELOPE_KEYS = [
+    'createSurface',
+    'updateComponents',
+    'updateDataModel',
+    'deleteSurface',
+    'callRendererFunction',
+    'agentFunctionResponse',
+    'beginRendering',
+    'surfaceUpdate',
+    'dataModelUpdate',
+];
+function isPlainRecord(value) {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+/**
+ * Extracts best-effort correlation metadata (`surfaceId`, `functionCallId`,
+ * `actionType`, `version`) from a raw message envelope before schema parsing.
+ *
+ * @param rawMessage Raw unvalidated message object.
+ * @param fallbackVersion Optional fallback protocol version string.
+ * @returns Extracted envelope error correlation context.
+ */
+export function extractEnvelopeErrorContext(rawMessage, fallbackVersion) {
+    if (!isPlainRecord(rawMessage)) {
+        return { version: fallbackVersion };
+    }
+    const version = typeof rawMessage['version'] === 'string' ? rawMessage['version'] : fallbackVersion;
+    const actionType = ACTION_ENVELOPE_KEYS.find(key => Object.prototype.hasOwnProperty.call(rawMessage, key));
+    if (!actionType) {
+        return { version };
+    }
+    const isCallRendererFunction = actionType === 'callRendererFunction';
+    const payload = rawMessage[actionType];
+    if (!isPlainRecord(payload)) {
+        return { actionType, isCallRendererFunction, version };
+    }
+    const surfaceId = typeof payload['surfaceId'] === 'string' ? payload['surfaceId'] : undefined;
+    const functionCallId = typeof payload['functionCallId'] === 'string' ? payload['functionCallId'] : undefined;
+    return {
+        surfaceId,
+        functionCallId,
+        actionType,
+        isCallRendererFunction,
+        version,
+    };
+}
+function stripActionPrefix(segments) {
+    if (segments.length > 0 && ACTION_ENVELOPE_KEYS.includes(segments[0])) {
+        return segments.slice(1);
+    }
+    return segments;
+}
+/**
+ * Normalizes a raw path string into an RFC 6901 JSON Pointer (`"/components/0/text"`),
+ * stripping any leading action envelope prefix.
+ *
+ * @param rawPath Raw path or JSON Pointer string.
+ * @returns Normalized RFC 6901 JSON Pointer, or `undefined` if empty.
+ */
+export function normalizeJsonPointer(rawPath) {
+    if (!rawPath)
+        return undefined;
+    if (rawPath.startsWith('/')) {
+        return rawPath;
+    }
+    const converted = rawPath
+        .replace(/\[(\d+)\]/g, '/$1')
+        .replace(/\./g, '/')
+        .replace(/^\/+/, '');
+    if (!converted)
+        return '/';
+    const segments = stripActionPrefix(converted.split('/').filter(Boolean));
+    return segments.length > 0 ? `/${segments.join('/')}` : undefined;
+}
+function collectLeafZodIssues(issues, actionType) {
+    const leaves = [];
+    for (const issue of issues) {
+        if (issue.code === z.ZodIssueCode.invalid_union && 'unionErrors' in issue) {
+            const unionIssues = issue.unionErrors.flatMap(u => u.issues);
+            leaves.push(...collectLeafZodIssues(unionIssues, actionType));
+        }
+        else {
+            leaves.push(issue);
+        }
+    }
+    if (!actionType)
+        return leaves;
+    const matching = leaves.filter(i => i.path[0] === actionType && i.path.length > 1);
+    return matching.length > 0 ? matching : leaves;
+}
+function extractPathFromZodDetails(details, actionType) {
+    let issues;
+    if (details instanceof z.ZodError) {
+        issues = details.issues;
+    }
+    else if (Array.isArray(details) && details.length > 0) {
+        const first = details[0];
+        if (typeof first?.['path'] === 'string') {
+            return normalizeJsonPointer(first['path']);
+        }
+        if (Array.isArray(first?.['path'])) {
+            issues = details;
+        }
+    }
+    if (!issues || issues.length === 0)
+        return undefined;
+    const selected = collectLeafZodIssues(issues, actionType)[0];
+    if (!selected)
+        return undefined;
+    const segments = selected.path.map(s => String(s).replace(/~/g, '~0').replace(/\//g, '~1'));
+    if (selected.code === z.ZodIssueCode.unrecognized_keys &&
+        'keys' in selected &&
+        Array.isArray(selected.keys) &&
+        selected.keys.length > 0) {
+        segments.push(String(selected.keys[0]).replace(/~/g, '~0').replace(/\//g, '~1'));
+    }
+    const stripped = stripActionPrefix(segments);
+    return stripped.length > 0 ? `/${stripped.join('/')}` : undefined;
+}
+function normalizeOutputVersion(version) {
+    if (version === 'v0.8' || version === '0.8')
+        return 'v0.8';
+    if (version === 'v0.9.1' || version === '0.9.1')
+        return 'v0.9.1';
+    if (version && isAtLeastVersion(version, '1.0'))
+        return '1.0';
+    return 'v0.9';
+}
+function resolveErrorCode(err, isV1) {
+    if (err instanceof A2uiRecursionError)
+        return 'RECURSION_LIMIT_EXCEEDED';
+    if (err instanceof A2uiIntegrityError || err instanceof A2uiStateError) {
+        return 'INTEGRITY_ERROR';
+    }
+    if (err instanceof A2uiCatalogError)
+        return 'CATALOG_NOT_FOUND';
+    if (err instanceof A2uiDataError)
+        return 'DATA_ERROR';
+    if (err instanceof A2uiExpressionError)
+        return 'EXPRESSION_ERROR';
+    if (err instanceof A2uiValidationError) {
+        if (err.code === 'UNALLOWED_PARENT' || err.code === 'UNALLOWED_CHILD') {
+            return isV1 ? err.code : 'VALIDATION_FAILED';
+        }
+        return 'VALIDATION_FAILED';
+    }
+    if (err instanceof A2uiError)
+        return err.code || 'INTERNAL_ERROR';
+    return 'INTERNAL_ERROR';
+}
+/**
+ * Maps an internal `A2uiError` (or unknown thrown error) and envelope context
+ * into a spec-compliant outbound `RendererErrorMessage`.
+ *
+ * @param err Thrown error instance.
+ * @param context Extracted envelope correlation context.
+ * @returns Spec-compliant outbound `RendererErrorMessage`.
+ */
+export function mapErrorToRendererMessage(err, context = {}) {
+    const version = normalizeOutputVersion(context.version);
+    const isV1 = version === '1.0';
+    const a2uiErr = err instanceof A2uiError ? err : undefined;
+    const message = err instanceof Error ? err.message : String(err);
+    const functionCallId = a2uiErr?.functionCallId ?? context.functionCallId;
+    const isRpcError = err instanceof A2uiRpcError ||
+        (isV1 &&
+            (context.isCallRendererFunction ||
+                context.actionType === 'callRendererFunction' ||
+                functionCallId !== undefined));
+    if (isRpcError) {
+        const rpcCode = err instanceof A2uiRpcError ? err.code : 'INVALID_FUNCTION_CALL';
+        if (functionCallId !== undefined) {
+            return {
+                version,
+                error: {
+                    code: rpcCode,
+                    functionCallId,
+                    message,
+                },
+            };
+        }
+        const surfaceId = a2uiErr?.surfaceId ?? context.surfaceId ?? '';
+        return {
+            version,
+            error: {
+                code: rpcCode,
+                surfaceId,
+                message,
+            },
+        };
+    }
+    const code = resolveErrorCode(err, isV1);
+    const surfaceId = a2uiErr?.surfaceId ?? context.surfaceId ?? '';
+    const rawPath = a2uiErr?.path ??
+        (err instanceof A2uiValidationError
+            ? extractPathFromZodDetails(err.details, context.actionType)
+            : undefined);
+    let path = normalizeJsonPointer(rawPath);
+    if (path === undefined &&
+        (code === 'VALIDATION_FAILED' || code === 'UNALLOWED_PARENT' || code === 'UNALLOWED_CHILD')) {
+        path = '/';
+    }
+    return {
+        version,
+        error: {
+            code,
+            surfaceId,
+            ...(path !== undefined ? { path } : {}),
+            message,
+        },
+    };
+}
